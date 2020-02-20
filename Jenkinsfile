@@ -5,17 +5,18 @@ pipeline {
   NEXUS_VERSION = "nexus3"
   // This can be http or https
   NEXUS_PROTOCOL = "http"
-  // Where your Nexus is running. on a container.
-  NEXUS_URL = "http://localhost"
-  NEXUS_PORT = "8081"
+  // Where your Nexus is running. In my case:
+  NEXUS_URL = "ec2-52-212-29-159.eu-west-1.compute.amazonaws.com:8081"
   // Repository where we will upload the artifact
   NEXUS_REPOSITORY = "maven-snapshots"
   // Jenkins credential id to authenticate to Nexus OSS
   NEXUS_CREDENTIAL_ID = "nexus-credentials"
   /* 
+    Windows: set the ip address of docker host. In my case 192.168.99.100.
+    to obtains this address : $ docker-machine ip
     Linux: set localhost to SONARQUBE_URL
   */
-  SONARQUBE_URL = "http://localhost"
+  SONARQUBE_URL = "http://192.168.99.100"
   SONARQUBE_PORT = "9000"
  }
  options {
@@ -64,7 +65,6 @@ pipeline {
     }
    }
   }
-  
   stage('Unit Tests') {
    when {
     anyOf { branch 'master'; branch 'develop' }
@@ -222,7 +222,73 @@ pipeline {
     }
    }
   }
+  stage('Deploy to Staging Servers') {
+   when {
+    anyOf { branch 'master'; branch 'develop' }
+   }
+   agent {
+    docker {
+     image 'ahmed24khaled/ansible-management'
+     reuseNode true
+    }
+   }
+   steps {
+    script {
 
-   
+     pom = readMavenPom file: "pom.xml"
+     repoPath = "${pom.groupId}".replace(".", "/") + "/${pom.artifactId}"
+     version = pom.version
+     artifactId = pom.artifactId
+     withEnv(["ANSIBLE_HOST_KEY_CHECKING=False", "APP_NAME=${artifactId}", "repoPath=${repoPath}", "version=${version}"]) {
+      sh '''
+      
+        curl --silent "http://$NEXUS_URL/repository/maven-snapshots/${repoPath}/${version}/maven-metadata.xml" > tmp &&
+        egrep '<value>+([0-9\\-\\.]*)' tmp > tmp2 &&
+        tail -n 1 tmp2 > tmp3 &&
+        tr -d "</value>[:space:]" < tmp3 > tmp4 &&
+        REPO_VERSION=$(cat tmp4) &&
+
+        export APP_SRC_URL="http://${NEXUS_URL}/repository/maven-snapshots/${repoPath}/${version}/${APP_NAME}-${REPO_VERSION}.war" &&
+        ansible-playbook -v -i ./ansible_provisioning/hosts --extra-vars "host=staging" ./ansible_provisioning/playbook.yml 
+
+       '''
+     }
+    }
+   }
+  }
+   stage('Deploy to Production Servers') {
+   when {
+    branch 'master'
+   }
+   agent {
+    docker {
+     image 'ahmed24khaled/ansible-management'
+     reuseNode true
+    }
+   }
+   steps {
+    script {
+
+     pom = readMavenPom file: "pom.xml"
+     repoPath = "${pom.groupId}".replace(".", "/") + "/${pom.artifactId}"
+     version = pom.version
+     artifactId = pom.artifactId
+     withEnv(["ANSIBLE_HOST_KEY_CHECKING=False", "APP_NAME=${artifactId}", "repoPath=${repoPath}", "version=${version}"]) {
+      sh '''
+      
+        curl --silent "$NEXUS_URL/repository/maven-snapshots/${repoPath}/${version}/maven-metadata.xml" > tmp &&
+        egrep '<value>+([0-9\\-\\.]*)' tmp > tmp2 &&
+        tail -n 1 tmp2 > tmp3 &&
+        tr -d "</value>[:space:]" < tmp3 > tmp4 &&
+        REPO_VERSION=$(cat tmp4) &&
+
+        export APP_SRC_URL="http://${NEXUS_URL}/repository/maven-snapshots/${repoPath}/${version}/${APP_NAME}-${REPO_VERSION}.war" &&
+        ansible-playbook -v -i ./ansible_provisioning/hosts --extra-vars "host=production" ./ansible_provisioning/playbook.yml 
+
+       '''
+     }
+    }
+   }
+  }
  }
 }
